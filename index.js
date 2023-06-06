@@ -4,22 +4,17 @@ import { Server } from 'socket.io'
 import { Ball } from './ball.js'
 import * as THREE from 'three'
 
-const socketToPlayer = new Map()
+const court_width = 30
+const court_length = 60
+const player_height = 2
+const ball_radius = 0.5
 
-const ballMap = new Map()
-let ball = new Ball({
-    position: new THREE.Vector3(2, 3, -2),
-    vel: new THREE.Vector3(0, 0, 0),
-})
-ballMap.set(ball.uuid, ball)
-
-ball = new Ball({
-    position: new THREE.Vector3(-2, 3, -2),
-    vel: new THREE.Vector3(0, 0, 0),
-})
-ballMap.set(ball.uuid, ball)
-
-const playerMap = new Map()
+let playerMap = new Map()
+let gameInSession = false
+let numPlayersAliveRed = 0
+let numPlayersAliveBlue = 0
+let ballMap = new Map()
+const numBalls = 1
 
 const httpServer = createServer()
 
@@ -82,8 +77,6 @@ io.on('connection', (socket) => {
         const packet = JSON.parse(data)
         const ready = packet.ready
 
-        console.log(ready)
-
         if (player.username == '' || player.team == '') {
             console.log(
                 `Player ${player.uuid} confirmed ready before entering username or selecting team.`
@@ -109,12 +102,32 @@ io.on('connection', (socket) => {
                     // Start the game
                     console.log('Sending start-game')
                     io.sockets.in('game').emit('start-game', JSON.stringify({}))
+
+                    gameInSession = true
+                    numPlayersAliveRed = 0
+                    numPlayersAliveBlue = 0
+                    playerMap.forEach((player, _) => {
+                        if (player.team == 'red') numPlayersAliveRed++
+                        else if (player.team == 'blue') numPlayersAliveBlue++
+                    })
                 }
             }
         }
     })
 
     socket.on('ready-to-start-game', (data) => {
+        if (!gameInSession) return
+
+        if (player.username == '') {
+            socket.emit('return-to-enter-name', {})
+            console.log('Emitting return-to-enter-name')
+            return
+        } else if (player.team == '') {
+            socket.emit('return-to-select-team', {})
+            console.log('Emitting return-to-select-team')
+            return
+        }
+
         socket.emit(
             'init',
             JSON.stringify({
@@ -126,22 +139,53 @@ io.on('connection', (socket) => {
 
     // receive a message from the client
     socket.on('updatePlayer', (data) => {
+        if (!gameInSession) return
+
         const packet = JSON.parse(data)
-        console.log('updatePlayer', packet)
 
         player.position = packet.position
+        if (player.live && !packet.live) {
+            if (player.team == 'red') numPlayersAliveRed--
+            else if (player.team == 'blue') numPlayersAliveBlue--
+        }
+        player.live = packet.live
 
         socket.to('game').emit(
             'updatePlayer',
             JSON.stringify({
                 uuid: player.uuid,
                 position: player.position,
+                live: player.live,
             })
         )
+
+        if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
+            gameInSession = false
+
+            playerMap.forEach((player, _) => {
+                player.username = ''
+                player.team = ''
+                player.ready = false
+                player.live = true
+            })
+
+            let result = 'Draw'
+            if (numPlayersAliveRed > 0) result = 'Red Wins'
+            else if (numPlayersAliveBlue > 0) result = 'Blue Wins'
+
+            io.sockets.in('game').emit(
+                'game-over',
+                JSON.stringify({
+                    result: result,
+                })
+            )
+        }
     })
 
     // receive a message from the client
     socket.on('updateBall', (data) => {
+        if (!gameInSession) return
+
         const packet = JSON.parse(data)
         // console.log(packet)
 
@@ -149,6 +193,7 @@ io.on('connection', (socket) => {
         const ball = ballMap.get(uuid)
         ball.position = packet.position
         ball.vel = packet.vel
+        ball.live = packet.live
 
         socket.to('game').emit('updateBall', data)
     })
@@ -183,6 +228,8 @@ const broadcastTeamSelectionInfo = (socket) => {
 }
 
 const constructClientBallMap = () => {
+    computeInitBallOrientations()
+
     const clientBallMap = {}
 
     ballMap.forEach((ball, uuid) => {
@@ -197,6 +244,8 @@ const constructClientBallMap = () => {
 }
 
 const constructClientPlayerMap = (playerUuid) => {
+    computeInitPlayerOrientations()
+
     const clientPlayerMap = {}
 
     playerMap.forEach((player, uuid) => {
@@ -205,8 +254,75 @@ const constructClientPlayerMap = (playerUuid) => {
             uuid: player.uuid,
             position: player.position,
             vel: player.vel,
+            team: player.team,
+            facing: player.facing,
         }
     })
 
     return clientPlayerMap
+}
+
+const computeInitPlayerOrientations = () => {
+    let numRedTeam = 0
+    let numBlueTeam = 0
+
+    playerMap.forEach((player, _) => {
+        if (player.team == 'red') numRedTeam++
+        else if (player.team == 'blue') numBlueTeam++
+    })
+
+    const redTeamSpacing = court_width / (numRedTeam + 1)
+    const blueTeamSpacing = court_width / (numBlueTeam + 1)
+
+    let i = 1
+    let j = 1
+
+    playerMap.forEach((player, _) => {
+        if (player.team == 'red') {
+            player.position.x = -court_width / 2 + redTeamSpacing * i++
+            player.position.y = player_height / 2
+            player.position.z = -court_length / 2 + player_height + 15
+
+            player.facing.x = 0
+            player.facing.y = 0
+            player.facing.z = 1
+        } else if (player.team == 'blue') {
+            player.position.x = -court_width / 2 + blueTeamSpacing * j++
+            player.position.y = player_height / 2
+            player.position.z = court_length / 2 - player_height - 15
+
+            player.facing.x = 0
+            player.facing.y = 0
+            player.facing.z = -1
+        }
+    })
+}
+
+const computeInitBallOrientations = () => {
+    if (ballMap.size == numBalls) {
+        const ballSpacing = court_width / (numBalls + 1)
+        let i = 0
+        ballMap.forEach((ball, _) => {
+            ball.position = new THREE.Vector3(
+                -court_width / 2 + ballSpacing * (i + 1),
+                ball_radius,
+                0
+            )
+            ball.vel = new THREE.Vector3(0, 0, 0)
+            i++
+        })
+    } else {
+        const ballSpacing = court_width / (numBalls + 1)
+        for (let i = 0; i < numBalls; i++) {
+            const ball = new Ball({
+                position: new THREE.Vector3(
+                    -court_width / 2 + ballSpacing * (i + 1),
+                    ball_radius,
+                    0
+                ),
+                vel: new THREE.Vector3(0, 0, 0),
+            })
+            ballMap.set(ball.uuid, ball)
+        }
+    }
 }
