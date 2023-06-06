@@ -159,7 +159,7 @@ io.on('connection', (socket) => {
             if (player.team == 'red') numPlayersAliveRed--
             else if (player.team == 'blue') numPlayersAliveBlue--
         }
-        player.vel = vel
+        player.vel = packet.vel
         player.live = packet.live
 
         socket.to('game').emit(
