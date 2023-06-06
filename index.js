@@ -217,7 +217,10 @@ const endGame = () => {
     }
 }
 
-httpServer.listen(process.env.PORT || 5000)
+httpServer.listen(process.env.PORT || 5000, () => {
+    const port = httpServer.address().port
+    console.log('Server is listening on port %s.', port)
+})
 
 const broadcastTeamSelectionInfo = (socket) => {
     const redTeam = []
