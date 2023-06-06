@@ -181,7 +181,6 @@ io.on('connection', (socket) => {
         if (!gameInSession) return
 
         const packet = JSON.parse(data)
-        // console.log(packet)
 
         const uuid = packet.uuid
         const ball = ballMap.get(uuid)
