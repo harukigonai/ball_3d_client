@@ -34,6 +34,17 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`Player ${player.uuid} disconnected.`)
         playerMap.delete(player.uuid)
+
+        if (gameInSession) {
+            if (player.live) {
+                if (player.team == 'red') numPlayersAliveRed--
+                else if (player.team == 'blue') numPlayersAliveBlue--
+            }
+
+            if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
+                endGame()
+            }
+        }
     })
 
     socket.on('enter-name', (data) => {
@@ -155,30 +166,13 @@ io.on('connection', (socket) => {
             JSON.stringify({
                 uuid: player.uuid,
                 position: player.position,
+                vel: player.vel,
                 live: player.live,
             })
         )
 
         if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
-            gameInSession = false
-
-            playerMap.forEach((player, _) => {
-                player.username = ''
-                player.team = ''
-                player.ready = false
-                player.live = true
-            })
-
-            let result = 'Draw'
-            if (numPlayersAliveRed > 0) result = 'Red Wins'
-            else if (numPlayersAliveBlue > 0) result = 'Blue Wins'
-
-            io.sockets.in('game').emit(
-                'game-over',
-                JSON.stringify({
-                    result: result,
-                })
-            )
+            endGame()
         }
     })
 
@@ -192,12 +186,37 @@ io.on('connection', (socket) => {
         const uuid = packet.uuid
         const ball = ballMap.get(uuid)
         ball.position = packet.position
+        ball.quaternion = packet.quaternion
         ball.vel = packet.vel
         ball.live = packet.live
 
         socket.to('game').emit('updateBall', data)
     })
 })
+
+const endGame = () => {
+    if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
+        gameInSession = false
+
+        playerMap.forEach((player, _) => {
+            player.username = ''
+            player.team = ''
+            player.ready = false
+            player.live = true
+        })
+
+        let result = 'Draw'
+        if (numPlayersAliveRed > 0) result = 'Red Wins'
+        else if (numPlayersAliveBlue > 0) result = 'Blue Wins'
+
+        io.sockets.in('game').emit(
+            'game-over',
+            JSON.stringify({
+                result: result,
+            })
+        )
+    }
+}
 
 httpServer.listen(4000)
 
@@ -256,6 +275,7 @@ const constructClientPlayerMap = (playerUuid) => {
             vel: player.vel,
             team: player.team,
             facing: player.facing,
+            name: player.username,
         }
     })
 
