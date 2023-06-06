@@ -217,7 +217,7 @@ const endGame = () => {
     }
 }
 
-httpServer.listen(4000)
+httpServer.listen(process.env.PORT || 5000)
 
 const broadcastTeamSelectionInfo = (socket) => {
     const redTeam = []
