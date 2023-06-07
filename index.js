@@ -28,12 +28,21 @@ io.on('connection', (socket) => {
     const player = new Player()
     playerMap.set(player.uuid, player)
 
-    socket.join('game')
+    socket.join('lobby')
+
     console.log(`Player ${player.uuid} connected.`)
+
+    if (gameInSession) socket.emit('game-on-going', {})
+    else socket.emit('game-not-on-going', {})
 
     socket.on('disconnect', () => {
         console.log(`Player ${player.uuid} disconnected.`)
         playerMap.delete(player.uuid)
+
+        socket.leave('lobby')
+        socket.leave('game')
+
+        broadcastTeamSelectionInfo(socket)
 
         if (gameInSession) {
             if (player.live) {
@@ -44,6 +53,8 @@ io.on('connection', (socket) => {
             if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
                 endGame()
             }
+        } else {
+            checkIfAllReadyAndStartGame()
         }
     })
 
@@ -101,27 +112,13 @@ io.on('connection', (socket) => {
             broadcastTeamSelectionInfo(socket)
 
             if (player.ready) {
-                // Are all players ready?
-                let allReady = true
+                socket.leave('lobby')
+                socket.join('game')
 
-                // Potential race condition if someone sends not ready around here?
-                playerMap.forEach(
-                    (player, _) => (allReady = allReady && player.ready)
-                )
-
-                if (allReady) {
-                    // Start the game
-                    console.log('Sending start-game')
-                    io.sockets.in('game').emit('start-game', JSON.stringify({}))
-
-                    gameInSession = true
-                    numPlayersAliveRed = 0
-                    numPlayersAliveBlue = 0
-                    playerMap.forEach((player, _) => {
-                        if (player.team == 'red') numPlayersAliveRed++
-                        else if (player.team == 'blue') numPlayersAliveBlue++
-                    })
-                }
+                checkIfAllReadyAndStartGame()
+            } else {
+                socket.leave('game')
+                socket.join('lobby')
             }
         }
     })
@@ -146,11 +143,18 @@ io.on('connection', (socket) => {
                 playerMap: constructClientPlayerMap(player.uuid),
             })
         )
+
+        if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
+            endGame()
+        }
     })
 
     // receive a message from the client
     socket.on('updatePlayer', (data) => {
         if (!gameInSession) return
+        else if (!playerMap.has(player.uuid)) {
+            return
+        }
 
         const packet = JSON.parse(data)
 
@@ -192,7 +196,49 @@ io.on('connection', (socket) => {
 
         socket.to('game').emit('updateBall', data)
     })
+
+    socket.on('in-game-wanderer', () => {
+        console.log('invoke in-game-wanderer')
+        socket.leave('game')
+
+        if (gameInSession) {
+            if (player.live) {
+                if (player.team == 'red') numPlayersAliveRed--
+                else if (player.team == 'blue') numPlayersAliveBlue--
+            }
+
+            if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
+                endGame()
+            }
+        }
+    })
 })
+
+const checkIfAllReadyAndStartGame = () => {
+    // Are all players ready?
+    let allReady = true
+
+    // Potential race condition if someone sends not ready around here?
+    playerMap.forEach((player, _) => {
+        if (player.team != '') allReady = allReady && player.ready
+    })
+
+    if (allReady) {
+        // Start the game
+        console.log('Sending start-game')
+
+        gameInSession = true
+        numPlayersAliveRed = 0
+        numPlayersAliveBlue = 0
+        playerMap.forEach((player, _) => {
+            if (player.team == 'red') numPlayersAliveRed++
+            else if (player.team == 'blue') numPlayersAliveBlue++
+        })
+
+        io.sockets.in('game').emit('start-game', JSON.stringify({}))
+        io.sockets.in('lobby').emit('game-on-going', {})
+    }
+}
 
 const endGame = () => {
     if (numPlayersAliveRed == 0 || numPlayersAliveBlue == 0) {
@@ -215,10 +261,21 @@ const endGame = () => {
                 result: result,
             })
         )
+
+        io.sockets.in('lobby').emit('game-not-on-going', {})
+
+        io.in('game')
+            .fetchSockets()
+            .then((socketList) =>
+                socketList.forEach((s) => {
+                    s.leave('game')
+                    s.join('lobby')
+                })
+            )
     }
 }
 
-httpServer.listen(process.env.PORT || 5000, () => {
+httpServer.listen(process.env.PORT || 4000, () => {
     const port = httpServer.address().port
     console.log('Server is listening on port %s.', port)
 })
@@ -239,7 +296,7 @@ const broadcastTeamSelectionInfo = (socket) => {
     })
 
     console.log('Emitting team-selection-info')
-    io.sockets.in('game').emit(
+    io.sockets.in('lobby').emit(
         'team-selection-info',
         JSON.stringify({
             redTeam: redTeam,
@@ -271,15 +328,16 @@ const constructClientPlayerMap = (playerUuid) => {
     const clientPlayerMap = {}
 
     playerMap.forEach((player, uuid) => {
-        clientPlayerMap[uuid] = {
-            playable: uuid == playerUuid,
-            uuid: player.uuid,
-            position: player.position,
-            vel: player.vel,
-            team: player.team,
-            facing: player.facing,
-            name: player.username,
-        }
+        if (player.team != '')
+            clientPlayerMap[uuid] = {
+                playable: uuid == playerUuid,
+                uuid: player.uuid,
+                position: player.position,
+                vel: player.vel,
+                team: player.team,
+                facing: player.facing,
+                name: player.username,
+            }
     })
 
     return clientPlayerMap
